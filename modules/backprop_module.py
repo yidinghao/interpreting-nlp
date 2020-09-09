@@ -1,5 +1,7 @@
 """
-PyTorch modules have a custom backward pass.
+PyTorch modules that have a custom backward pass. The forward pass is
+re-implemented in NumPy, since the modules here do not expose the stored
+results of the forward pass.
 """
 from abc import ABC, abstractmethod
 from typing import Tuple
@@ -12,40 +14,38 @@ from torch import nn
 
 class BackpropModuleMixin(ABC):
     """
-    An interface for implementing custom backward passes.
+    The general interface for modules with custom backward passes. When
+    a module is in "attribution mode," the forward and backward
+    functions are replaced with the custom functions (re-)implemented in
+    NumPy.
     """
 
     def __init__(self, *args, **kwargs):
         super(BackpropModuleMixin, self).__init__(*args, **kwargs)
-        self._attr = False  # Attribution mode or not
-        self._input = None
-        self._output = None
+        self._attr = False  # Am I in attribution mode?
+        self._input = None  # Forward pass input
+        self._output = None  # Forward pass output
         self._state = None  # Forward pass stored computations
 
     def train(self, *args, **kwargs):
-        """
-        Puts the module in training mode, and takes it out of
-        attribution mode
-        """
         super(BackpropModuleMixin, self).train(*args, **kwargs)
         self._attr = False
+        self._input = None
+        self._output = None
         self._state = None
 
-    def eval(self, attr: bool = False):
-        """
-        Puts the module in evaluation mode, and optionally attribution
-        mode
-
-        :param attr: Whether or not to put the module in attribution
-            mode
-        """
+    def eval(self):
         super(BackpropModuleMixin, self).eval()
-        self._attr = attr
-        if not attr:
-            self._state = None
+        self._attr = False
+        self._input = None
+        self._output = None
+        self._state = None
 
     def attr(self):
-        self.eval(attr=True)
+        """
+        Puts the module in attribution mode.
+        """
+        self._attr = True
 
     def __call__(self, *args, **kwargs):
         if self._attr:
@@ -54,52 +54,74 @@ class BackpropModuleMixin(ABC):
                 if isinstance(args[i], torch.Tensor):
                     args[i] = args[i].detach().numpy()
 
-            self._input = args
-            self._output = self.attr_forward(*args, **kwargs)
-            return self._output
+            for k in kwargs:
+                if isinstance(kwargs[k], torch.Tensor):
+                    kwargs[k] = kwargs[k].detach().numpy()
+
+            return self.attr_forward(*args, **kwargs)
         return super(BackpropModuleMixin, self).__call__(*args, **kwargs)
+
+    def backward(self, *args, **kwargs):
+        if self._attr:
+            args = list(args)
+            for i in range(len(args)):
+                if isinstance(args[i], torch.Tensor):
+                    args[i] = args[i].detach().numpy()
+
+            for k in kwargs:
+                if isinstance(kwargs[k], torch.Tensor):
+                    kwargs[k] = kwargs[k].detach().numpy()
+
+            return self.attr_backward(*args, **kwargs)
+        self.backward(*args, **kwargs)
 
     @abstractmethod
     def attr_forward(self, *args, **kwargs):
-        raise NotImplementedError("Please implement the custom forward pass")
+        """
+        The custom forward pass in NumPy.
+        """
+        raise NotImplementedError("attr_forward not implemented")
 
     @abstractmethod
     def attr_backward(self, *args, **kwargs):
-        raise NotImplementedError("Please implement the custom backward pass")
+        """
+        The custom backward pass in NumPy.
+        """
+        raise NotImplementedError("attr_backward not implemented")
 
 
 class BackpropLinear(BackpropModuleMixin, nn.Linear):
     """
-    Linear module
+    An interface for nn.Linear.
     """
 
     def attr_forward(self, x: np.ndarray):
-        """
-        Forward pass.
-
-        :param x:
-        :return:
-        """
+        self._input = [x]
         wx = x @ self.weight.detach().numpy().T
         self._state = dict(wx=wx)
-        return wx + self.bias.detach().numpy()
+        self._output = wx + self.bias.detach().numpy()
+        return self._output
 
 
-class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
+class BackpropRNNMixin(BackpropModuleMixin):
     """
-    LSTM module
+    An interface for PyTorch RNNs in general.
     """
 
     def __init__(self, *args, **kwargs):
-        super(BackpropLSTM, self).__init__(*args, **kwargs, batch_first=True)
+        super(BackpropRNNMixin, self).__init__(*args, **kwargs,
+                                               batch_first=True)
 
     def attr_forward(self, x: np.ndarray):
         """
-        Computes the LSTM forward pass using NumPy operations and saves
-        a trace of the computation to self.traces and self.traces_rev.
+        Computes the RNN forward pass for all layers and directions. The
+        mathematical calculations are defined in the abstract helper
+        function _layer_forward.
 
-        :param x: An input to the LSTM (batch_size, seq_len, input_size)
-        :return: The LSTM output
+        :param x: An input to the RNN, of shape (batch_size, seq_len,
+            input_size)
+        :return: The RNN output, of shape (batch_size, seq_len,
+            hidden_size)
         """
         curr_input = x
         self._input = [None] * self.num_layers
@@ -120,18 +142,48 @@ class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
         self._output = curr_input
         return curr_input
 
+    @abstractmethod
     def _layer_forward(self, x: np.ndarray, layer: int, direction: int):
         """
-        Performs a forward pass using numpy operations for one layer.
+        This helper function computes the forward pass for a particular
+        layer and direction.
 
-        :param x: An input of shape (batch_size, seq_len, input_size)
-        :param layer: The layer to perform the forward pass for
-        :param direction: The direction to perform the forward pass for
-
-        :return: None, but saves a trace of the forward pass, consisting
-            of the weights used and the values of the gates, to
-            self._traces or self._traces_rev
+        :param x: The input to the layer
+        :param layer: The layer number
+        :param direction: The direction number (0 for left to right, 1
+            for right to left)
+        :return: None, but the result should be stored in
+            self._state["ltr"][layer] or self._state["rtl"][layer]
         """
+        raise NotImplementedError("_layer_forward not implemented")
+
+    num_gates = None
+
+    def _params_numpy(self, prefix: str, layer: int, direction: int) \
+            -> Tuple[np.ndarray, ...]:
+        """
+        Retrieves weight matrices or bias vectors for a particular layer
+        and direction.
+
+        :param prefix: "weight_ih" for input weights, "weight_hh" for
+            hidden state weights, "bias_ih" for input biases, or
+            "bias_hh" for hidden state biases
+        :param layer: The layer to retrieve weights for
+        :param direction: The direction to retrieve weights for
+        :return: The weight/bias matrices
+        """
+        p = prefix + "_l" + str(layer) + ("_reverse" if direction == 1 else "")
+        return np.split(getattr(self, p).detach().numpy(), self.num_gates)
+
+
+class BackpropLSTM(BackpropRNNMixin, nn.LSTM):
+    """
+    An interface for nn.LSTM.
+    """
+
+    num_gates = 4
+
+    def _layer_forward(self, x: np.ndarray, layer: int, direction: int):
         if direction == 0:
             self._input[layer] = x
 
@@ -183,25 +235,55 @@ class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
         else:
             self._state["rtl"][layer] = h, c, i, f, g, g_pre, w_ig.T, w_hg.T
 
-    def _params_numpy(self, prefix: str, layer: int, direction: int = 0) -> \
-            Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Retrieves weight matrices or bias vectors for a particular layer
-        and direction.
 
-        :param prefix: "weight_ih" for input weights, "weight_hh" for
-            hidden state weights, "bias_ih" for input biases, or
-            "bias_hh" for hidden state biases
+class BackpropGRU(BackpropRNNMixin, nn.GRU):
+    """
+    An interface for nn.GRU.
+    """
 
-        :param layer: The layer to retrieve weights for
+    num_gates = 3
 
-        :param direction: The direction to retrieve weights for
-        :return:
-        """
-        n = self.hidden_size
-        p = prefix + "_l" + str(layer)
-        if direction == 1:
-            p += "_reverse"
+    def _layer_forward(self, x: np.ndarray, layer: int, direction: int):
+        if direction == 0:
+            self._input[layer] = x
 
-        w = getattr(self, p).detach().numpy()
-        return tuple(w[n * i:n * (i + 1)] for i in range(4))
+        batch_size, seq_len, _ = x.shape
+        x = x[:, :, :, np.newaxis]
+
+        # Get parameters
+        kwargs = {"layer": layer, "direction": direction}
+        w_ir, w_iz, w_in = self._params_numpy("weight_ih", **kwargs)
+        w_hr, w_hz, w_hn = self._params_numpy("weight_hh", **kwargs)
+        biases_i = self._params_numpy("bias_ih", **kwargs)
+        biases_h = self._params_numpy("bias_hh", **kwargs)
+        b_ir, b_iz, b_in = [b[:, np.newaxis] for b in biases_i]
+        b_hr, b_hz, b_hn = [b[:, np.newaxis] for b in biases_h]
+
+        # Initialize
+        h = np.zeros((batch_size, seq_len, self.hidden_size))
+        r = np.zeros((batch_size, seq_len, self.hidden_size))
+        z = np.zeros((batch_size, seq_len, self.hidden_size))
+        n_pre = np.zeros((batch_size, seq_len, self.hidden_size))
+        n = np.zeros((batch_size, seq_len, self.hidden_size))
+
+        # Forward pass
+        h_prev = np.zeros((batch_size, self.hidden_size, 1))
+        for t in range(seq_len):
+            r_temp = (w_ir @ x[:, t] + b_ir + w_hr @ h_prev + b_hr).squeeze(-1)
+            z_temp = (w_iz @ x[:, t] + b_iz + w_hz @ h_prev + b_hz).squeeze(-1)
+            r[:, t] = expit(r_temp)
+            z[:, t] = expit(z_temp)
+
+            n_pre_i = (w_in @ x[:, t] + b_in).squeeze(-1)
+            n_pre_h = (w_hn @ h_prev + b_hn).squeeze(-1)
+            n_pre[:, t] = n_pre_i + r[:, t] * n_pre_h
+            n[:, t] = np.tanh(n_pre[:, t])
+
+            h[:, t] = (1. - z[:, t]) * n[:, t] + z[:, t] * h_prev.squeeze(-1)
+            h_prev = h[:, t, :, np.newaxis]
+
+            # Save trace to state
+            if direction == 0:
+                self._state["ltr"][layer] = h, r, z, n, n_pre, w_in.T, w_hn.T
+            else:
+                self._state["rtl"][layer] = h, r, z, n, n_pre, w_in.T, w_hn.T
