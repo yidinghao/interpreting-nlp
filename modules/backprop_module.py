@@ -132,6 +132,9 @@ class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
             of the weights used and the values of the gates, to
             self._traces or self._traces_rev
         """
+        if direction == 0:
+            self._input[layer] = x
+
         batch_size, seq_len, _ = x.shape
         x = x[:, :, :, np.newaxis]
 
@@ -157,16 +160,16 @@ class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
         h_prev = np.zeros((batch_size, self.hidden_size, 1))
         c_prev = np.zeros((batch_size, self.hidden_size))
         for t in range(seq_len):
-            i_temp = w_ii @ x[:, t] + b_ii + w_hi @ h_prev + b_hi
-            f_temp = w_if @ x[:, t] + b_if + w_hf @ h_prev + b_hf
-            g_temp = w_ig @ x[:, t] + b_ig + w_hg @ h_prev + b_hg
-            o_temp = w_io @ x[:, t] + b_io + w_ho @ h_prev + b_ho
+            i_temp = (w_ii @ x[:, t] + b_ii + w_hi @ h_prev + b_hi).squeeze(-1)
+            f_temp = (w_if @ x[:, t] + b_if + w_hf @ h_prev + b_hf).squeeze(-1)
+            g_temp = (w_ig @ x[:, t] + b_ig + w_hg @ h_prev + b_hg).squeeze(-1)
+            o_temp = (w_io @ x[:, t] + b_io + w_ho @ h_prev + b_ho).squeeze(-1)
 
-            i[:, t] = expit(i_temp[:, :, 0])
-            f[:, t] = expit(f_temp[:, :, 0])
-            g_pre[:, t] = g_temp[:, :, 0]
-            g[:, t] = np.tanh(g_pre[:, t])
-            o[:, t] = expit(o_temp[:, :, 0])
+            i[:, t] = expit(i_temp)
+            f[:, t] = expit(f_temp)
+            g_pre[:, t] = g_temp
+            g[:, t] = np.tanh(g_temp)
+            o[:, t] = expit(o_temp)
 
             c[:, t] = f[:, t] * c_prev + i[:, t] * g[:, t]
             h[:, t] = o[:, t] * np.tanh(c[:, t])
@@ -175,11 +178,10 @@ class BackpropLSTM(BackpropModuleMixin, nn.LSTM):
             c_prev = c[:, t]
 
         # Save trace to state
-        if direction == 1:
-            self._state["rtl"][layer] = h, c, i, f, g, g_pre, w_ig, w_hg
+        if direction == 0:
+            self._state["ltr"][layer] = h, c, i, f, g, g_pre, w_ig.T, w_hg.T
         else:
-            self._input[layer] = x
-            self._state["ltr"][layer] = h, c, i, f, g, g_pre, w_ig, w_hg
+            self._state["rtl"][layer] = h, c, i, f, g, g_pre, w_ig.T, w_hg.T
 
     def _params_numpy(self, prefix: str, layer: int, direction: int = 0) -> \
             Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
