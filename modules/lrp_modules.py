@@ -74,11 +74,8 @@ class LRPLSTM(LRPRNNMixin, backprop.BackpropLSTM):
         Performs a backward pass using numpy operations for one layer.
 
         :param rel_y: The relevance flowing to this layer
-
         :param layer: The layer to perform the backward pass for
-
         :param direction: The direction to perform the backward pass for
-
         :return: The relevance of the layer inputs
         """
         if direction == 0:
@@ -126,11 +123,8 @@ class LRPGRU(LRPRNNMixin, backprop.BackpropGRU):
         Performs a backward pass using numpy operations for one layer.
 
         :param rel_y: The relevance flowing to this layer
-
         :param layer: The layer to perform the backward pass for
-
         :param direction: The direction to perform the backward pass for
-
         :return: The relevance of the layer inputs
         """
         if direction == 0:
