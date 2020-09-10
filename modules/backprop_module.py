@@ -279,7 +279,7 @@ class BackpropGRU(BackpropRNNMixin, nn.GRU):
             n_pre[:, t] = n_pre_i + r[:, t] * n_pre_h
             n[:, t] = np.tanh(n_pre[:, t])
 
-            h[:, t] = (1. - z[:, t]) * n[:, t] + z[:, t] * h_prev.squeeze(-1)
+            h[:, t] = (1 - z[:, t]) * n[:, t] + z[:, t] * h_prev.squeeze(-1)
             h_prev = h[:, t, :, np.newaxis]
 
             # Save trace to state
