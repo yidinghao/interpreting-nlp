@@ -287,3 +287,19 @@ class BackpropGRU(BackpropRNNMixin, nn.GRU):
                 self._state["ltr"][layer] = h, r, z, n, n_pre, w_in.T, w_hn.T
             else:
                 self._state["rtl"][layer] = h, r, z, n, n_pre, w_in.T, w_hn.T
+
+
+class BackpropLayerNorm(BackpropModuleMixin, nn.LayerNorm):
+    def attr_forward(self, x):
+        axes = tuple(range(-1, -len(self.normalized_shape) - 1, -1))
+        num = x - x.mean(axis=axes, keepdims=True)
+        den = np.sqrt(x.var(axis=axes, keepdims=True) + self.eps)
+        if not self.elementwise_affine:
+            return num / den
+
+        gamma = self.weight.detach().numpy()
+        beta = self.bias.detach().numpy()
+        return (num / den) * gamma + beta
+
+    def attr_backward(self, *args, **kwargs):
+        pass
