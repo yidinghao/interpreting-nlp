@@ -22,21 +22,21 @@ class BackpropModuleMixin(ABC):
 
     def __init__(self, *args, **kwargs):
         super(BackpropModuleMixin, self).__init__(*args, **kwargs)
-        self._attr = False  # Am I in attribution mode?
+        self.attr_mode = False  # Am I in attribution mode?
         self._input = None  # Forward pass input
         self._output = None  # Forward pass output
         self._state = None  # Forward pass stored computations
 
     def train(self, *args, **kwargs):
         super(BackpropModuleMixin, self).train(*args, **kwargs)
-        self._attr = False
+        self.attr_mode = False
         self._input = None
         self._output = None
         self._state = None
 
     def eval(self):
         super(BackpropModuleMixin, self).eval()
-        self._attr = False
+        self.attr_mode = False
         self._input = None
         self._output = None
         self._state = None
@@ -45,24 +45,27 @@ class BackpropModuleMixin(ABC):
         """
         Puts the module in attribution mode.
         """
-        self._attr = True
+        self.attr_mode = True
+
+    _convert_attr_input_to_numpy = True
 
     def __call__(self, *args, **kwargs):
-        if self._attr:
-            args = list(args)
-            for i in range(len(args)):
-                if isinstance(args[i], torch.Tensor):
-                    args[i] = args[i].detach().numpy()
+        if self.attr_mode:
+            if self._convert_attr_input_to_numpy:
+                args = list(args)
+                for i in range(len(args)):
+                    if isinstance(args[i], torch.Tensor):
+                        args[i] = args[i].detach().numpy()
 
-            for k in kwargs:
-                if isinstance(kwargs[k], torch.Tensor):
-                    kwargs[k] = kwargs[k].detach().numpy()
+                for k in kwargs:
+                    if isinstance(kwargs[k], torch.Tensor):
+                        kwargs[k] = kwargs[k].detach().numpy()
 
             return self.attr_forward(*args, **kwargs)
         return super(BackpropModuleMixin, self).__call__(*args, **kwargs)
 
     def backward(self, *args, **kwargs):
-        if self._attr:
+        if self.attr_mode:
             args = list(args)
             for i in range(len(args)):
                 if isinstance(args[i], torch.Tensor):
@@ -290,6 +293,10 @@ class BackpropGRU(BackpropRNNMixin, nn.GRU):
 
 
 class BackpropLayerNorm(BackpropModuleMixin, nn.LayerNorm):
+    """
+    Layer normalization for the Transformer.
+    """
+
     def attr_forward(self, x):
         axes = tuple(range(-1, -len(self.normalized_shape) - 1, -1))
         num = x - x.mean(axis=axes, keepdims=True)
@@ -300,6 +307,3 @@ class BackpropLayerNorm(BackpropModuleMixin, nn.LayerNorm):
         gamma = self.weight.detach().numpy()
         beta = self.bias.detach().numpy()
         return (num / den) * gamma + beta
-
-    def attr_backward(self, *args, **kwargs):
-        pass
