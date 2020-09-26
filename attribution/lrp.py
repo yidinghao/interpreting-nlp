@@ -18,10 +18,10 @@ def lrp_linear_single(x: np.ndarray, y: np.ndarray, rel_y: np.ndarray,
     :param eps: Stabilizer
     :return: The relevance of x (input_size,)
     """
-    denom = y + eps * np.where(y >= 0, 1., -1.)
+    y = y + eps * np.where(y >= 0, 1., -1.)
     if w is None:
-        return x * (rel_y / denom)
-    return (w * x[:, np.newaxis]) @ (rel_y / denom)
+        return x * (rel_y / y)
+    return (w * x[:, np.newaxis]) @ (rel_y / y)
 
 
 def lrp_linear(x: np.ndarray, y: np.ndarray, rel_y: np.ndarray,
