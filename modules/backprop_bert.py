@@ -9,9 +9,9 @@ from transformers.configuration_bert import BertConfig
 
 from modules import backprop_module as bp
 
-# I'm using these types as shorthands for different array sizes.
+# Shorthands for different array sizes
 HiddenArray = np.ndarray  # (batch_size, seq_len, hidden_size)
-AttentionArray = np.ndarray  # (batch_size, num_heads, seq_len, seq_len)
+AttentionArray = np.ndarray  # (batch_size, num_heads, seq_len, _)
 IndexTensor = torch.LongTensor  # (batch_size, seq_len)
 EmbeddingTensor = torch.FloatTensor  # (batch_size, seq_len, hidden_size)
 
@@ -24,6 +24,15 @@ activations = dict(relu=lambda x: np.maximum(x, 0.),
                    swish=lambda x: x * sp.expit(x),
                    gelu_new=lambda x: x * .5 * _erf_approx(x),
                    mish=None)
+
+
+def hidden_to_attention(h: HiddenArray, num_heads: int) -> AttentionArray:
+    return h.reshape(h.shape[:-1] + (num_heads, -1)).transpose(0, 2, 1, 3)
+
+
+def attention_to_hidden(a: AttentionArray) -> HiddenArray:
+    a = a.transpose(0, 2, 1, 3)
+    return a.reshape(a.shape[:-2] + (-1,))
 
 
 class BackpropBertMixin(bp.BackpropModuleMixin):
@@ -41,8 +50,7 @@ class BackpropBertMixin(bp.BackpropModuleMixin):
                          bert.BertIntermediate: None,
                          bert.BertOutput: None}
 
-    @classmethod
-    def convert_to_attr(cls, layer: NormalLayer) -> bp.BackpropModuleMixin:
+    def convert_to_attr(self, layer: NormalLayer) -> bp.BackpropModuleMixin:
         """
         Converts nn.Linear or nn.LayerNorm to custom backprop layers. In
         order to use this, child classes must override the _layer_types
@@ -52,10 +60,10 @@ class BackpropBertMixin(bp.BackpropModuleMixin):
         :return: The corresponding module with custom backprop
         """
         if isinstance(layer, nn.Linear):
-            linear_class = cls._layer_types[nn.Linear]
+            linear_class = self._layer_types[nn.Linear]
             new_layer = linear_class(layer.in_features, layer.out_features)
         elif isinstance(layer, nn.LayerNorm):
-            ln_class = cls._layer_types[nn.LayerNorm]
+            ln_class = self._layer_types[nn.LayerNorm]
             new_layer = ln_class(layer.normalized_shape, eps=layer.eps,
                                  elementwise_affine=layer.elementwise_affine)
         else:
@@ -68,6 +76,13 @@ class BackpropBertMixin(bp.BackpropModuleMixin):
         new_layer = self._bert_layer_types[type(layer)](config)
         new_layer.load_state_dict(layer.state_dict())
         return new_layer
+
+    def hidden_to_attention(self, h: HiddenArray) -> AttentionArray:
+        return hidden_to_attention(h, self.num_attention_heads)
+
+    @staticmethod
+    def attention_to_hidden(a: AttentionArray) -> HiddenArray:
+        return attention_to_hidden(a)
 
 
 class BackpropBertEmbeddings(BackpropBertMixin, bert.BertEmbeddings):
@@ -97,7 +112,7 @@ class BackpropBertEmbeddings(BackpropBertMixin, bert.BertEmbeddings):
         :param input_ids: Indices for an input sequence
         :param inputs_embeds: Embeddings for an input sequence. Either
             this or input_ids must be none
-        :param token_type_ids: Token types (???)
+        :param token_type_ids: idk what this is
         :param position_ids: Positions
         :return: The input to the first BERT layer
         """
@@ -122,6 +137,7 @@ class BackpropBertEmbeddings(BackpropBertMixin, bert.BertEmbeddings):
         token_type_embeds = self.token_type_embeddings(token_type_ids)
         token_type_embeds = token_type_embeds.detach().numpy()
 
+        self._state = inputs_embeds, position_embeds, token_type_embeds
         return self.LayerNorm(inputs_embeds + position_embeds +
                               token_type_embeds)
 
@@ -135,9 +151,9 @@ class BackpropBertSelfAttention(BackpropBertMixin, bert.BertSelfAttention):
 
     def __init__(self, config: BertConfig):
         super(BackpropBertSelfAttention, self).__init__(config)
-        self.query = BackpropBertSelfAttention.convert_to_attr(self.query)
-        self.key = BackpropBertSelfAttention.convert_to_attr(self.key)
-        self.value = BackpropBertSelfAttention.convert_to_attr(self.value)
+        self.query = self.convert_to_attr(self.query)
+        self.key = self.convert_to_attr(self.key)
+        self.value = self.convert_to_attr(self.value)
 
     def attr(self):
         super(BackpropBertSelfAttention, self).attr()
@@ -172,9 +188,9 @@ class BackpropBertSelfAttention(BackpropBertMixin, bert.BertSelfAttention):
             mixed_key_layer = self.key(hidden_states)
             mixed_value_layer = self.value(hidden_states)
 
-        query_layer = self._attr_transpose_for_scores(mixed_query_layer)
-        key_layer = self._attr_transpose_for_scores(mixed_key_layer)
-        value_layer = self._attr_transpose_for_scores(mixed_value_layer)
+        query_layer = self.hidden_to_attention(mixed_query_layer)
+        key_layer = self.hidden_to_attention(mixed_key_layer)
+        value_layer = self.hidden_to_attention(mixed_value_layer)
 
         attention_scores = query_layer @ key_layer.transpose(0, 1, 3, 2)
         attention_scores /= np.sqrt(self.attention_head_size)
@@ -185,17 +201,13 @@ class BackpropBertSelfAttention(BackpropBertMixin, bert.BertSelfAttention):
         if head_mask is not None:
             attention_probs *= head_mask
 
-        context_layer = (attention_probs @ value_layer).transpose(0, 2, 1, 3)
-        context_layer = np.reshape(context_layer, context_layer.shape[:-2] + \
-                                   (self.all_head_size,))
+        context_layer = attention_probs @ value_layer
+        self._state = dict(context_layer=context_layer,
+                           attention_probs=attention_probs,
+                           value_layer=value_layer)
 
+        context_layer = self.attention_to_hidden(context_layer)
         return context_layer, attention_probs
-
-    def _attr_transpose_for_scores(self, x: HiddenArray) -> np.ndarray:
-        new_x_shape = x.shape[:-1] + (self.num_attention_heads,
-                                      self.attention_head_size)
-        x = np.reshape(x, new_x_shape)
-        return x.transpose(0, 2, 1, 3)
 
 
 class BackpropBertSelfOutput(BackpropBertMixin, bert.BertSelfOutput):
@@ -206,8 +218,8 @@ class BackpropBertSelfOutput(BackpropBertMixin, bert.BertSelfOutput):
 
     def __init__(self, config: BertConfig):
         super(BackpropBertSelfOutput, self).__init__(config)
-        self.dense = BackpropBertSelfOutput.convert_to_attr(self.dense)
-        self.LayerNorm = BackpropBertSelfOutput.convert_to_attr(self.LayerNorm)
+        self.dense = self.convert_to_attr(self.dense)
+        self.LayerNorm = self.convert_to_attr(self.LayerNorm)
 
     def attr(self):
         super(BackpropBertSelfOutput, self).attr()
@@ -216,7 +228,10 @@ class BackpropBertSelfOutput(BackpropBertMixin, bert.BertSelfOutput):
 
     def attr_forward(self, hidden_states: HiddenArray,
                      input_tensor: HiddenArray) -> HiddenArray:
-        return self.LayerNorm(self.dense(hidden_states) + input_tensor)
+        dense_output = self.dense(hidden_states)
+        self._state = dict(dense_output=dense_output,
+                           input_tensor=input_tensor)
+        return self.LayerNorm(dense_output + input_tensor)
 
 
 class BackpropBertAttention(BackpropBertMixin, bert.BertAttention):
@@ -268,7 +283,7 @@ class BackpropBertIntermediate(BackpropBertMixin, bert.BertIntermediate):
 
     def __init__(self, config: BertConfig):
         super(BackpropBertIntermediate, self).__init__(config)
-        self.dense = BackpropBertMixin.convert_to_attr(self.dense)
+        self.dense = self.convert_to_attr(self.dense)
         self.intermediate_act_fn_numpy = activations[config.hidden_act]
 
     def attr(self):
@@ -287,8 +302,8 @@ class BackpropBertOutput(BackpropBertMixin, bert.BertOutput):
 
     def __init__(self, config: BertConfig):
         super(BackpropBertOutput, self).__init__(config)
-        self.dense = BackpropBertOutput.convert_to_attr(self.dense)
-        self.LayerNorm = BackpropBertOutput.convert_to_attr(self.LayerNorm)
+        self.dense = self.convert_to_attr(self.dense)
+        self.LayerNorm = self.convert_to_attr(self.LayerNorm)
 
     def attr(self):
         super(BackpropBertOutput, self).attr()
@@ -297,7 +312,10 @@ class BackpropBertOutput(BackpropBertMixin, bert.BertOutput):
 
     def attr_forward(self, hidden_states: HiddenArray,
                      input_tensor: HiddenArray) -> HiddenArray:
-        return self.LayerNorm(self.dense(hidden_states) + input_tensor)
+        dense_output = self.dense(hidden_states)
+        self._state = dict(dense_output=dense_output,
+                           input_tensor=input_tensor)
+        return self.LayerNorm(dense_output + input_tensor)
 
 
 class BackpropBertLayer(BackpropBertMixin, bert.BertLayer):
@@ -346,12 +364,17 @@ class BackpropBertLayer(BackpropBertMixin, bert.BertLayer):
             scores
         """
         assert self.attention.attr_mode
+        assert self.intermediate.attr_mode
+        assert self.output.attr_mode
+        if self.add_cross_attention:
+            assert self.crossattention.attr_mode
 
         attn_output, attn_probs = self.attention(hidden_states,
                                                  attention_mask=attention_mask,
                                                  head_mask=head_mask)
 
         if self.is_decoder and encoder_hidden_states is not None:
+            self._state = {"crossattention_used": True}
             assert hasattr(self, "crossattention")
             assert self.crossattention.attr_mode
             cross_output = self.crossattention(attn_output,
@@ -359,10 +382,14 @@ class BackpropBertLayer(BackpropBertMixin, bert.BertLayer):
                                                encoder_hidden_states,
                                                encoder_attention_mask)
             attn_output, attn_probs = cross_output
+        else:
+            self._state = {"crossattention_used": False}
 
+        # TODO: Make apply_chunking_to_forward compatible with NumPy
         output = bert.apply_chunking_to_forward(self.feed_forward_chunk,
                                                 self.chunk_size_feed_forward,
                                                 self.seq_len_dim, attn_output)
+
         return output, attn_probs
 
 
@@ -438,7 +465,11 @@ class BackpropBertPooler(BackpropBertMixin, bert.BertPooler):
 
 class BackpropBertModel(BackpropBertMixin, bert.BertModel):
     """
-    A full BERT model.
+    A full BERT model. This is a stack of Transformer encoders that
+    takes an input sequence of the form
+        [CLS] sequence1 [SEP] sequence2
+    and produces an output sequence of the same form. It is pre-trained
+    on BERT's masked language modeling objective.
     """
     _bert_layer_types = {bert.BertEmbeddings: BackpropBertEmbeddings,
                          bert.BertEncoder: BackpropBertEncoder,
@@ -461,18 +492,28 @@ class BackpropBertModel(BackpropBertMixin, bert.BertModel):
     def attr_forward(self, input_ids=None, attention_mask=None,
                      token_type_ids=None, position_ids=None, head_mask=None,
                      inputs_embeds=None, encoder_hidden_states=None,
-                     encoder_attention_mask=None,
-                     output_attentions: bool = None,
-                     output_hidden_states: bool = None,
-                     return_dict: bool = None):
-        # Set default values
-        if output_attentions is None:
-            output_attentions = self.config.output_attentions
-        if output_hidden_states is None:
-            output_hidden_states = self.config.output_hidden_states
-        if return_dict is None:
-            return_dict = self.config.use_return_dict
+                     encoder_attention_mask=None):
+        """
+        The complete BERT forward pass.
 
+        :param input_ids: An input sequence, represented as an index
+            tensor of shape (batch_size, seq_len)
+        :param attention_mask: An attention mask that masks out [PAD]
+            symbols and symbols without a prediction
+        :param token_type_ids: Not sure what this is for
+        :param position_ids: The positional encoding
+        :param head_mask: Some other mask
+        :param inputs_embeds: Embedding vectors for the input. This
+            cannot be specified if input_ids is specified, and vice
+            versa
+        :param encoder_hidden_states: Hidden states from a previous
+            computation, which will be reused
+        :param encoder_attention_mask: The attention mask from a
+            previous computation, which will be reused
+
+        :return: The sequence output, the pooled output, and all the
+            encoder block outputs
+        """
         # Get input embedding shape
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and "
@@ -497,7 +538,7 @@ class BackpropBertModel(BackpropBertMixin, bert.BertModel):
         extended_attention_mask = extended_attention_mask.detach().numpy()
 
         if self.config.is_decoder and encoder_hidden_states is not None:
-            raise Im
+            raise RuntimeWarning("I didn't implement this carefully")
             encoder_hidden_shape = encoder_hidden_states.shape[:-1]
             if encoder_attention_mask is None:
                 encoder_attention_mask = torch.ones(encoder_hidden_shape)
@@ -525,5 +566,32 @@ class BackpropBertModel(BackpropBertMixin, bert.BertModel):
                          encoder_attention_mask=encoder_extended_attn_mask)
 
         sequence_output = encoder_outputs[0]
+        self._state = {"output_shape": sequence_output.shape}
         pooled_output = self.pooler(sequence_output)
         return (sequence_output, pooled_output) + encoder_outputs[1:]
+
+
+BFSC = bert.BertForSequenceClassification
+
+
+class BackpropBertForSequenceClassification(BackpropBertMixin, BFSC):
+    """
+    A BERT model with a linear decoder.
+    """
+    _bert_layer_types = {bert.BertModel: BackpropBertModel}
+
+    _convert_attr_input_to_numpy = False
+
+    def __init__(self, config: BertConfig):
+        super(BackpropBertForSequenceClassification, self).__init__(config)
+        self.bert = self.convert_bert_to_attr(self.bert, config)
+        self.classifier = self.convert_to_attr(self.classifier)
+
+    def attr(self):
+        super(BackpropBertForSequenceClassification, self).attr()
+        self.bert.attr()
+        self.classifier.attr()
+
+    def attr_forward(self, **kwargs):
+        outputs = self.bert(**kwargs)
+        return self.classifier(outputs[1])
