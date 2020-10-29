@@ -5,11 +5,11 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-import modules.backprop_module as backprop
+import modules.backprop_module as bp
 from attribution.lrp import lrp_linear
 
 
-class LRPLinear(backprop.BackpropLinear):
+class LRPLinear(bp.BackpropLinear):
     """
     A Linear module with LRP.
     """
@@ -63,7 +63,7 @@ class LRPRNNMixin(ABC):
         raise NotImplementedError("_layer_backward not implemented")
 
 
-class LRPLSTM(LRPRNNMixin, backprop.BackpropLSTM):
+class LRPLSTM(LRPRNNMixin, bp.BackpropLSTM):
     """
     An LSTM module with LRP.
     """
@@ -112,7 +112,7 @@ class LRPLSTM(LRPRNNMixin, backprop.BackpropLSTM):
         return rel_x
 
 
-class LRPGRU(LRPRNNMixin, backprop.BackpropGRU):
+class LRPGRU(LRPRNNMixin, bp.BackpropGRU):
     """
     A GRU module with LRP.
     """
@@ -157,3 +157,8 @@ class LRPGRU(LRPRNNMixin, backprop.BackpropGRU):
                                       w=r[:, t] * w_hn, eps=eps)
 
         return rel_x
+
+
+class LRPLayerNorm(bp.BackpropLayerNorm):
+    def attr_backward(self, x):
+        return x
