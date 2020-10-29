@@ -29,9 +29,9 @@ def lrp_linear(x: np.ndarray, y: np.ndarray, rel_y: np.ndarray,
     """
     Implements the LRP-epsilon rule for a linear layer: y = w @ x + b.
 
-    :param x: Input (batch_size, input_size)
-    :param y: Output (batch_size, output_size)
-    :param rel_y: Network output relevance (batch_size, output_size)
+    :param x: Input (..., input_size)
+    :param y: Output (..., output_size)
+    :param rel_y: Network output relevance (..., output_size)
     :param w: Transposed weight matrix (input_size, output_size). If
         left blank, the weight matrix is assumed to be the identity:
         y = x + b
@@ -42,9 +42,9 @@ def lrp_linear(x: np.ndarray, y: np.ndarray, rel_y: np.ndarray,
     if w is None:
         return x * (rel_y / y)
 
-    lhs = w[np.newaxis, :, :] * x[:, :, np.newaxis]
-    rhs = (rel_y / y)[:, :, np.newaxis]
-    return (lhs @ rhs).squeeze(2)
+    lhs = w[..., np.newaxis, :, :] * x[..., np.newaxis]
+    rhs = (rel_y / y)[..., np.newaxis]
+    return (lhs @ rhs).squeeze(-1)
 
 
 def lrp_matmul(x: np.ndarray, w: np.ndarray, y: np.ndarray, rel_y: np.ndarray,
