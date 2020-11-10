@@ -1,9 +1,8 @@
-import pickle
 from typing import Tuple
 
 import numpy as np
 from torch import nn
-from transformers import BertTokenizer, modeling_bert as bert
+from transformers import modeling_bert as bert
 
 from attribution.lrp import lrp_linear, lrp_matmul
 from modules import backprop_bert as bpbert
@@ -29,6 +28,8 @@ class LRPBertEmbeddings(LRPBertMixin, bpbert.BackpropBertEmbeddings):
         :param eps:
         :return:
         """
+        rel_y = self.LayerNorm.attr_backward(rel_y, eps=eps)
+
         inp_embeds, pos_embeds, tok_type_embeds = self._state
         combined_embeds = inp_embeds + pos_embeds + tok_type_embeds
         rel_input = lrp_linear(inp_embeds, combined_embeds, rel_y, eps=eps)
@@ -189,7 +190,8 @@ class LRPBertModel(bpbert.BackpropBertModel):
             rel_sequence[:, 0] += rel_first
 
         rel_embeddings = self.encoder.attr_backward(rel_sequence, eps=eps)
-        return self.embeddings.attr_backward(rel_embeddings)
+        return self.embeddings.attr_backward(rel_embeddings) + \
+               (rel_embeddings,)
 
 
 BBFSC = bpbert.BackpropBertForSequenceClassification
@@ -205,27 +207,3 @@ class LRPBertForSequenceClassification(LRPBertMixin, BBFSC):
             Tuple[HiddenArray, HiddenArray, HiddenArray]:
         rel_pooled = self.classifier.attr_backward(rel_y, eps=eps)
         return self.bert.attr_backward(rel_pooled=rel_pooled, eps=eps)
-
-
-if __name__ == "__main__":
-    with open("../config.p", "rb") as f:
-        config = pickle.load(f)
-
-    embedding_layer = LRPBertEmbeddings(config)
-    attn = LRPBertAttention(config)
-
-    embedding_layer.attr()
-    attn.attr()
-
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
-
-    embeddings = embedding_layer(input_ids=inputs["input_ids"],
-                                 token_type_ids=inputs["token_type_ids"])
-    attn_output, _ = attn(embeddings)
-
-    rel_output = np.random.rand(*attn_output.shape)
-    rel_embeddings = attn.attr_backward(rel_output)
-    print(embedding_layer.attr_backward(rel_embeddings))
-
-    _ = bert

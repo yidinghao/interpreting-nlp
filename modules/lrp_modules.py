@@ -1,7 +1,9 @@
 """
 PyTorch modules that support layer-wise relevance propagation (LRP).
 """
+import operator
 from abc import ABC, abstractmethod
+from functools import reduce
 
 import numpy as np
 
@@ -160,5 +162,24 @@ class LRPGRU(LRPRNNMixin, bp.BackpropGRU):
 
 
 class LRPLayerNorm(bp.BackpropLayerNorm):
-    def attr_backward(self, x):
-        return x
+    def attr_backward(self, rel_y: np.ndarray, eps: float = 0.001) -> \
+            np.ndarray:
+        """
+
+        :param rel_y:
+        :param eps:
+        :return:
+        """
+        if self.elementwise_affine:
+            rel_y = lrp_linear(self._state["gamma_term"],
+                               self._state["output"], rel_y, eps=eps)
+
+        num = self._state["x"] - self._state["mean"]
+        rel_x = lrp_linear(self._state["x"], num, rel_y, eps=eps)
+        rel_mean = lrp_linear(-self._state["mean"], num, rel_y, eps=eps)
+
+        n = reduce(operator.mul, self.normalized_shape, 1)
+        rel_x += lrp_linear(self._state["x"], n * self._state["mean"],
+                            rel_mean, eps=eps)
+
+        return rel_x

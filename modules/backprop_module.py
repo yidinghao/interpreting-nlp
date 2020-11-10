@@ -299,11 +299,19 @@ class BackpropLayerNorm(BackpropModuleMixin, nn.LayerNorm):
 
     def attr_forward(self, x):
         axes = tuple(range(-1, -len(self.normalized_shape) - 1, -1))
-        num = x - x.mean(axis=axes, keepdims=True)
+        mean = x.mean(axis=axes, keepdims=True)
+        num = x - mean
         den = np.sqrt(x.var(axis=axes, keepdims=True) + self.eps)
+
+        self._state = dict(mean=mean, x=x)
         if not self.elementwise_affine:
             return num / den
 
         gamma = self.weight.detach().numpy()
         beta = self.bias.detach().numpy()
-        return (num / den) * gamma + beta
+        gamma_term = (num / den) * gamma
+        output = gamma_term + beta
+
+        self._state["output"] = output
+        self._state["gamma_term"] = gamma_term
+        return output
