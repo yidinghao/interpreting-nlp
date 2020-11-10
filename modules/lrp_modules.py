@@ -162,6 +162,10 @@ class LRPGRU(LRPRNNMixin, bp.BackpropGRU):
 
 
 class LRPLayerNorm(bp.BackpropLayerNorm):
+    """
+    A LayerNorm module with LRP.
+    """
+
     def attr_backward(self, rel_y: np.ndarray, eps: float = 0.001) -> \
             np.ndarray:
         """
