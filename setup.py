@@ -1,5 +1,6 @@
 from distutils.core import setup
 
-setup(name="interpretnlp",
+setup(name="interpret-nlp",
       version="0.1",
-      packages=["attribution", "modules", "visualization"])
+      packages=["interpret_nlp", "interpret_nlp.attribution",
+                "interpret_nlp.modules", "interpret_nlp.visualization"])
