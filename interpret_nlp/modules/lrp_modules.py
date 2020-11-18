@@ -7,7 +7,7 @@ from functools import reduce
 
 import numpy as np
 
-from interpret_nlp import modules as bp
+from interpret_nlp.modules import backprop_module as bp
 from interpret_nlp.attribution.lrp import lrp_linear
 
 
