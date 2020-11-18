@@ -1,13 +1,13 @@
 from typing import Tuple
 
 import numpy as np
+from modules.lrp_modules import LRPLinear, LRPLayerNorm
 from torch import nn
 from transformers import modeling_bert as bert
 
-from attribution.lrp import lrp_linear, lrp_matmul
-from modules import backprop_bert as bpbert
-from modules.backprop_bert import HiddenArray
-from modules.lrp_modules import LRPLinear, LRPLayerNorm
+from interpret_nlp.attribution.lrp import lrp_linear, lrp_matmul
+from interpret_nlp.modules import backprop_bert as bpbert
+from interpret_nlp.modules.backprop_bert import HiddenArray
 
 
 class LRPBertMixin(bpbert.BackpropBertMixin):
