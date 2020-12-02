@@ -4,8 +4,8 @@ import numpy as np
 import scipy.special as sp
 import torch
 from torch import nn
-from transformers import modeling_bert as bert
-from transformers.configuration_bert import BertConfig
+from transformers import BertConfig
+from transformers.models.bert import modeling_bert as bert
 
 from interpret_nlp.modules import backprop_module as bp
 

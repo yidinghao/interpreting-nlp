@@ -2,7 +2,7 @@ from typing import Tuple
 
 import numpy as np
 from torch import nn
-from transformers import modeling_bert as bert
+from transformers.models.bert import modeling_bert as bert
 
 from interpret_nlp.attribution.lrp import lrp_linear, lrp_matmul
 from interpret_nlp.modules import backprop_bert as bpbert
